@@ -8,8 +8,16 @@
 'use strict';
 
 /* ----------------------------------------------------------------------------
-   1. State & Constants
+   1. State & Storage Constants
    ---------------------------------------------------------------------------- */
+
+/**
+ * Storage keys used for browser localStorage persistence.
+ */
+const STORAGE_KEYS = {
+  TASKS: 'codelane_tasks',
+  THEME: 'codelane_theme'
+};
 
 /**
  * Central state array holding all task objects.
@@ -24,7 +32,7 @@ let recentlyDeletedTask = null;
 let toastTimeoutId = null;
 
 /**
- * Default sample tasks representing realistic developer workflows.
+ * Default sample coding tasks loaded on first visit.
  */
 const SAMPLE_TASKS = [
   {
@@ -60,6 +68,9 @@ const SAMPLE_TASKS = [
    2. DOM Element Selectors
    ---------------------------------------------------------------------------- */
 const DOM = {
+  // Theme Toggle
+  themeToggleBtn: document.getElementById('theme-toggle-btn'),
+
   // Stats & Progress
   statTotal: document.getElementById('stat-total'),
   statTodo: document.getElementById('stat-todo'),
@@ -117,7 +128,7 @@ const DOM = {
   toastContainer: document.getElementById('toast-container')
 };
 
-// Variable holding pending callback for the confirmation modal
+// Pending callback for confirmation dialog
 let onConfirmCallback = null;
 
 /* ----------------------------------------------------------------------------
@@ -125,9 +136,10 @@ let onConfirmCallback = null;
    ---------------------------------------------------------------------------- */
 
 /**
- * Initializes the application: loads initial state, sets default listeners, and renders.
+ * Initializes the application: loads theme, loads tasks, attaches listeners, and renders.
  */
 function initApp() {
+  loadTheme();
   loadTasks();
   setupEventListeners();
   render();
@@ -148,38 +160,108 @@ function getOffsetDateString(daysOffset = 0) {
 }
 
 /* ----------------------------------------------------------------------------
-   4. Data Persistence (localStorage Stubs ready for Phase 4)
+   4. LocalStorage Data & Theme Persistence
    ---------------------------------------------------------------------------- */
 
 /**
- * Loads tasks into memory. Uses sample tasks if none exist yet.
+ * Restores user theme choice from localStorage.
+ * Defaults to dark theme if no preference has been saved yet.
  */
-function loadTasks() {
+function loadTheme() {
   try {
-    const rawData = localStorage.getItem('codelane_tasks');
-    if (rawData) {
-      const parsed = JSON.parse(rawData);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        tasks = parsed;
-        return;
-      }
+    const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME);
+    if (savedTheme === 'light') {
+      document.body.classList.add('theme-light');
+      updateThemeButtonUI(true);
+    } else {
+      document.body.classList.remove('theme-light');
+      updateThemeButtonUI(false);
     }
   } catch (err) {
-    console.warn('Could not read tasks from localStorage. Falling back to samples.', err);
+    console.warn('Could not read theme from localStorage:', err);
   }
-  // Fallback to sample tasks on first run
-  tasks = [...SAMPLE_TASKS];
 }
 
 /**
- * Persists the current state array to localStorage safely with error handling.
+ * Toggles the theme between dark and light, updates DOM, and saves to localStorage.
+ */
+function toggleTheme() {
+  const isCurrentlyLight = document.body.classList.toggle('theme-light');
+  updateThemeButtonUI(isCurrentlyLight);
+  try {
+    localStorage.setItem(STORAGE_KEYS.THEME, isCurrentlyLight ? 'light' : 'dark');
+  } catch (err) {
+    console.warn('Could not save theme preference to localStorage:', err);
+  }
+}
+
+/**
+ * Updates the theme button icon and text for clarity.
+ * @param {boolean} isLight 
+ */
+function updateThemeButtonUI(isLight) {
+  if (!DOM.themeToggleBtn) return;
+  const iconSpan = DOM.themeToggleBtn.querySelector('.theme-icon');
+  const labelSpan = DOM.themeToggleBtn.querySelector('.theme-label');
+
+  if (isLight) {
+    if (iconSpan) iconSpan.textContent = '🌙';
+    if (labelSpan) labelSpan.textContent = 'Dark';
+    DOM.themeToggleBtn.setAttribute('aria-label', 'Switch to dark mode');
+  } else {
+    if (iconSpan) iconSpan.textContent = '☀️';
+    if (labelSpan) labelSpan.textContent = 'Light';
+    DOM.themeToggleBtn.setAttribute('aria-label', 'Switch to light mode');
+  }
+}
+
+/**
+ * Safely loads tasks from localStorage with try/catch.
+ * If visiting for the first time, seeds SAMPLE_TASKS.
+ * If data is corrupted, catches the error and recovers safely.
+ */
+function loadTasks() {
+  try {
+    const rawData = localStorage.getItem(STORAGE_KEYS.TASKS);
+
+    // 1. First visit check: key is null
+    if (rawData === null) {
+      tasks = [...SAMPLE_TASKS];
+      saveTasks();
+      return;
+    }
+
+    // 2. Parse JSON
+    const parsed = JSON.parse(rawData);
+
+    // 3. Schema validation check: must be an array
+    if (Array.isArray(parsed)) {
+      tasks = parsed;
+    } else {
+      throw new Error('Stored data is not a valid task array.');
+    }
+  } catch (err) {
+    console.error('Failed to load or parse tasks from localStorage. Recovering with sample data:', err);
+    tasks = [...SAMPLE_TASKS];
+    saveTasks();
+    showToast('Corrupted data detected. Restored default sample tasks.', 'error');
+  }
+}
+
+/**
+ * Safely serializes and saves the central tasks array into localStorage.
+ * Wrapped in try/catch to gracefully handle QuotaExceededError or disabled storage.
+ * @returns {boolean} Whether save succeeded
  */
 function saveTasks() {
   try {
-    localStorage.setItem('codelane_tasks', JSON.stringify(tasks));
+    const serialized = JSON.stringify(tasks);
+    localStorage.setItem(STORAGE_KEYS.TASKS, serialized);
+    return true;
   } catch (err) {
     console.error('Error saving tasks to localStorage:', err);
-    showToast('Failed to save tasks to local storage.', 'error');
+    showToast('Storage quota exceeded or storage disabled.', 'error');
+    return false;
   }
 }
 
@@ -526,6 +608,7 @@ function validateTaskForm() {
 
 /**
  * Handles form submission for both Creating and Updating tasks.
+ * Follows the pattern: Mutate Data -> Save to localStorage -> Render UI.
  * @param {Event} e 
  */
 function handleTaskFormSubmit(e) {
@@ -718,6 +801,11 @@ function showToast(message, type = 'info', showUndo = false) {
    ---------------------------------------------------------------------------- */
 
 function setupEventListeners() {
+  // --- Theme Toggle Listener ---
+  if (DOM.themeToggleBtn) {
+    DOM.themeToggleBtn.addEventListener('click', toggleTheme);
+  }
+
   // --- Header Actions ---
   DOM.openNewTaskBtn.addEventListener('click', () => {
     openTaskModal(null, 'todo');
