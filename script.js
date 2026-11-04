@@ -68,6 +68,15 @@ const DOM = {
   // Theme Toggle
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
 
+  // Data Menu Dropdown
+  dataMenuBtn: document.getElementById('data-menu-btn'),
+  dataMenuDropdown: document.getElementById('data-menu-dropdown'),
+  exportJsonBtn: document.getElementById('export-json-btn'),
+  importJsonBtn: document.getElementById('import-json-btn'),
+  resetSamplesBtn: document.getElementById('reset-samples-btn'),
+  clearAllBtn: document.getElementById('clear-all-btn'),
+  importFileInput: document.getElementById('import-file-input'),
+
   // Stats & Progress
   statTotal: document.getElementById('stat-total'),
   statTodo: document.getElementById('stat-todo'),
@@ -606,11 +615,6 @@ function undoDelete() {
   showToast('Task deletion undone.', 'success');
 }
 
-/**
- * Moves a task to a specific column status (used by drag-and-drop).
- * @param {number} taskId 
- * @param {'todo'|'inprogress'|'done'} newStatus 
- */
 function moveTaskToStatus(taskId, newStatus) {
   const task = tasks.find(t => t.id === taskId);
   if (!task || task.status === newStatus) return;
@@ -621,11 +625,6 @@ function moveTaskToStatus(taskId, newStatus) {
   showToast(`Moved to ${formatStatusLabel(newStatus)}.`, 'info');
 }
 
-/**
- * Moves a task to the next or previous column (used by card arrow buttons).
- * @param {number} taskId 
- * @param {'left'|'right'} direction 
- */
 function moveTaskDirection(taskId, direction) {
   const task = tasks.find(t => t.id === taskId);
   if (!task) return;
@@ -647,7 +646,106 @@ function moveTaskDirection(taskId, direction) {
 }
 
 /* ----------------------------------------------------------------------------
-   7. Confirmation Dialog Modal
+   7. Data Menu Operations (Export, Import, Reset, Clear)
+   ---------------------------------------------------------------------------- */
+
+/**
+ * Toggles visibility of the top bar Data dropdown menu.
+ */
+function toggleDataMenu() {
+  if (!DOM.dataMenuDropdown) return;
+  const isHidden = DOM.dataMenuDropdown.hidden;
+  DOM.dataMenuDropdown.hidden = !isHidden;
+  DOM.dataMenuBtn.setAttribute('aria-expanded', String(isHidden));
+}
+
+function closeDataMenu() {
+  if (!DOM.dataMenuDropdown) return;
+  DOM.dataMenuDropdown.hidden = true;
+  DOM.dataMenuBtn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * Exports tasks as a downloadable JSON file.
+ */
+function exportTasksJSON() {
+  closeDataMenu();
+  try {
+    const dataString = JSON.stringify(tasks, null, 2);
+    const blob = new Blob([dataString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.href = url;
+    downloadAnchor.download = `codelane-tasks-${getOffsetDateString(0)}.json`;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    document.body.removeChild(downloadAnchor);
+    URL.revokeObjectURL(url);
+    showToast('Tasks exported as JSON.', 'success');
+  } catch (err) {
+    console.error('Export error:', err);
+    showToast('Failed to export tasks.', 'error');
+  }
+}
+
+/**
+ * Validates and imports tasks from an uploaded JSON file.
+ * @param {Event} e 
+ */
+function handleFileImport(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    try {
+      const parsed = JSON.parse(event.target.result);
+
+      if (!Array.isArray(parsed)) {
+        throw new Error('Imported JSON is not an array.');
+      }
+
+      // Strict validation for required fields
+      const validatedTasks = parsed.map((item, idx) => {
+        if (!item.title || typeof item.title !== 'string' || item.title.trim().length === 0) {
+          throw new Error(`Task at index ${idx} is missing a valid title.`);
+        }
+        const validStatuses = ['todo', 'inprogress', 'done'];
+        const validPriorities = ['low', 'medium', 'high'];
+
+        return {
+          id: typeof item.id === 'number' ? item.id : (Date.now() + idx),
+          title: item.title.trim(),
+          description: typeof item.description === 'string' ? item.description.trim() : '',
+          priority: validPriorities.includes(item.priority) ? item.priority : 'medium',
+          due: item.due || getOffsetDateString(2),
+          status: validStatuses.includes(item.status) ? item.status : 'todo',
+          createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now()
+        };
+      });
+
+      tasks = validatedTasks;
+      saveTasks();
+      render();
+      showToast(`Imported ${tasks.length} tasks successfully.`, 'success');
+    } catch (err) {
+      console.error('Import validation failed:', err);
+      showToast('Invalid JSON file format or corrupted tasks.', 'error');
+    } finally {
+      DOM.importFileInput.value = ''; // Reset input to allow re-selecting the same file
+    }
+  };
+
+  reader.onerror = () => {
+    showToast('Failed to read file.', 'error');
+    DOM.importFileInput.value = '';
+  };
+
+  reader.readAsText(file);
+}
+
+/* ----------------------------------------------------------------------------
+   8. Confirmation Dialog Modal
    ---------------------------------------------------------------------------- */
 
 function showConfirmModal(title, message, actionText = 'Delete', onConfirm) {
@@ -665,7 +763,7 @@ function closeConfirmModal() {
 }
 
 /* ----------------------------------------------------------------------------
-   8. Toast Notifications
+   9. Toast Notifications
    ---------------------------------------------------------------------------- */
 
 function showToast(message, type = 'info', showUndo = false) {
@@ -704,18 +802,87 @@ function showToast(message, type = 'info', showUndo = false) {
 }
 
 /* ----------------------------------------------------------------------------
-   9. Native HTML5 Drag and Drop & Event Listeners
+   10. Event Delegation & Listeners
    ---------------------------------------------------------------------------- */
 
 function setupEventListeners() {
+  // Theme Toggle
   if (DOM.themeToggleBtn) {
     DOM.themeToggleBtn.addEventListener('click', toggleTheme);
   }
 
+  // Data Menu Dropdown Actions
+  if (DOM.dataMenuBtn) {
+    DOM.dataMenuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleDataMenu();
+    });
+  }
+
+  if (DOM.exportJsonBtn) {
+    DOM.exportJsonBtn.addEventListener('click', exportTasksJSON);
+  }
+
+  if (DOM.importJsonBtn) {
+    DOM.importJsonBtn.addEventListener('click', () => {
+      closeDataMenu();
+      DOM.importFileInput.click();
+    });
+  }
+
+  if (DOM.importFileInput) {
+    DOM.importFileInput.addEventListener('change', handleFileImport);
+  }
+
+  if (DOM.resetSamplesBtn) {
+    DOM.resetSamplesBtn.addEventListener('click', () => {
+      closeDataMenu();
+      showConfirmModal(
+        'Reset Tasks',
+        'Reset all tasks to sample developer tasks? Any custom tasks will be overwritten.',
+        'Reset',
+        () => {
+          tasks = [...SAMPLE_TASKS];
+          saveTasks();
+          render();
+          showToast('Tasks reset to default samples.', 'info');
+        }
+      );
+    });
+  }
+
+  if (DOM.clearAllBtn) {
+    DOM.clearAllBtn.addEventListener('click', () => {
+      closeDataMenu();
+      showConfirmModal(
+        'Clear All Tasks',
+        'Are you sure you want to delete ALL tasks on the board? This cannot be undone.',
+        'Clear All',
+        () => {
+          tasks = [];
+          saveTasks();
+          render();
+          showToast('All tasks cleared.', 'info');
+        }
+      );
+    });
+  }
+
+  // Close data menu on clicking anywhere else on page
+  document.addEventListener('click', (e) => {
+    if (DOM.dataMenuDropdown && !DOM.dataMenuDropdown.hidden) {
+      if (!DOM.dataMenuDropdown.contains(e.target) && e.target !== DOM.dataMenuBtn) {
+        closeDataMenu();
+      }
+    }
+  });
+
+  // New task button
   DOM.openNewTaskBtn.addEventListener('click', () => {
     openTaskModal(null, 'todo');
   });
 
+  // Modal actions
   DOM.modalCloseBtn.addEventListener('click', closeTaskModal);
   DOM.modalCancelBtn.addEventListener('click', closeTaskModal);
   DOM.taskForm.addEventListener('submit', handleTaskFormSubmit);
@@ -754,6 +921,7 @@ function setupEventListeners() {
     if (e.key === 'Escape') {
       if (!DOM.taskModal.hidden) closeTaskModal();
       if (!DOM.confirmModal.hidden) closeConfirmModal();
+      closeDataMenu();
     }
   });
 
@@ -764,7 +932,7 @@ function setupEventListeners() {
     });
   });
 
-  // Card click event delegation (Edit, Delete, Move Arrow Buttons)
+  // Card click event delegation
   DOM.boardGrid.addEventListener('click', (e) => {
     const cardEl = e.target.closest('.task-card');
     if (!cardEl) return;
@@ -799,7 +967,7 @@ function setupEventListeners() {
     }
   });
 
-  // Native HTML5 Drag & Drop on Cards
+  // Drag and Drop card listeners
   DOM.boardGrid.addEventListener('dragstart', (e) => {
     const cardEl = e.target.closest('.task-card');
     if (!cardEl) return;
@@ -817,7 +985,6 @@ function setupEventListeners() {
     DOM.columns.forEach(col => col.classList.remove('column-drag-over'));
   });
 
-  // Native HTML5 Drop Target Listeners on Columns
   DOM.columns.forEach(col => {
     col.addEventListener('dragover', (e) => {
       e.preventDefault();
