@@ -923,8 +923,9 @@ textarea.form-control {
   border-radius: var(--radius-xl);
   width: 100%;
   max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: var(--shadow-lg);
-  overflow: hidden;
   animation: slideUp var(--transition-normal);
 }
 
