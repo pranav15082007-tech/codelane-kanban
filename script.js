@@ -97,6 +97,7 @@ const DOM = {
   countInProgress: document.getElementById('count-inprogress'),
   countDone: document.getElementById('count-done'),
   boardGrid: document.querySelector('.board-grid'),
+  columns: document.querySelectorAll('.board-column'),
 
   // Task Modal Form
   taskModal: document.getElementById('task-modal'),
@@ -151,6 +152,18 @@ function getOffsetDateString(daysOffset = 0) {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * Human-readable status labels.
+ * @param {string} status 
+ * @returns {string}
+ */
+function formatStatusLabel(status) {
+  if (status === 'todo') return 'To Do';
+  if (status === 'inprogress') return 'In Progress';
+  if (status === 'done') return 'Done';
+  return status;
 }
 
 /* ----------------------------------------------------------------------------
@@ -235,16 +248,11 @@ function saveTasks() {
    5. Search, Filter, Sort Engine & Rendering
    ---------------------------------------------------------------------------- */
 
-/**
- * Filter and sort visible tasks combining search, priority filter, and sorting.
- * @returns {Array<Object>}
- */
 function getVisibleTasks() {
   const searchTerm = DOM.searchInput ? DOM.searchInput.value.trim().toLowerCase() : '';
   const selectedPriority = DOM.priorityFilter ? DOM.priorityFilter.value : 'all';
   const sortMode = DOM.sortSelect ? DOM.sortSelect.value : 'created-desc';
 
-  // 1. Multi-criteria Filtering (Search across Title & Description + Priority Filter)
   let filtered = tasks.filter(task => {
     const titleMatch = task.title.toLowerCase().includes(searchTerm);
     const descMatch = Boolean(task.description && task.description.toLowerCase().includes(searchTerm));
@@ -253,7 +261,6 @@ function getVisibleTasks() {
     return matchesSearch && matchesPriority;
   });
 
-  // 2. Sorting by User Selection
   filtered.sort((a, b) => {
     if (sortMode === 'due-asc') {
       const dueA = a.due || '9999-99-99';
@@ -264,7 +271,6 @@ function getVisibleTasks() {
       const priorityOrder = { high: 3, medium: 2, low: 1 };
       return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
     }
-    // Default sort: 'created-desc' (newest first)
     const timeA = a.createdAt || a.id;
     const timeB = b.createdAt || b.id;
     return timeB - timeA;
@@ -329,7 +335,6 @@ function renderBoard() {
   inProgressTasks.forEach(task => DOM.cardsInProgress.appendChild(createTaskCardElement(task)));
   doneTasks.forEach(task => DOM.cardsDone.appendChild(createTaskCardElement(task)));
 
-  // Live column badges match visible tasks count
   DOM.countTodo.textContent = todoTasks.length;
   DOM.countInProgress.textContent = inProgressTasks.length;
   DOM.countDone.textContent = doneTasks.length;
@@ -338,7 +343,6 @@ function renderBoard() {
   DOM.emptyInProgress.style.display = inProgressTasks.length === 0 ? 'flex' : 'none';
   DOM.emptyDone.style.display = doneTasks.length === 0 ? 'flex' : 'none';
 
-  // Show "No Results" message when search/filter returns nothing
   const isFiltering = (DOM.searchInput.value.trim() !== '') || (DOM.priorityFilter.value !== 'all');
   if (isFiltering && visibleTasks.length === 0) {
     DOM.boardEmptyMessage.hidden = false;
@@ -461,7 +465,7 @@ function createTaskCardElement(task) {
 }
 
 /* ----------------------------------------------------------------------------
-   6. CRUD Operations
+   6. CRUD & Movement Operations
    ---------------------------------------------------------------------------- */
 
 function openTaskModal(taskToEdit = null, defaultStatus = 'todo') {
@@ -602,6 +606,26 @@ function undoDelete() {
   showToast('Task deletion undone.', 'success');
 }
 
+/**
+ * Moves a task to a specific column status (used by drag-and-drop).
+ * @param {number} taskId 
+ * @param {'todo'|'inprogress'|'done'} newStatus 
+ */
+function moveTaskToStatus(taskId, newStatus) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task || task.status === newStatus) return;
+
+  task.status = newStatus;
+  saveTasks();
+  render();
+  showToast(`Moved to ${formatStatusLabel(newStatus)}.`, 'info');
+}
+
+/**
+ * Moves a task to the next or previous column (used by card arrow buttons).
+ * @param {number} taskId 
+ * @param {'left'|'right'} direction 
+ */
 function moveTaskDirection(taskId, direction) {
   const task = tasks.find(t => t.id === taskId);
   if (!task) return;
@@ -619,6 +643,7 @@ function moveTaskDirection(taskId, direction) {
 
   saveTasks();
   render();
+  showToast(`Moved to ${formatStatusLabel(task.status)}.`, 'info');
 }
 
 /* ----------------------------------------------------------------------------
@@ -679,7 +704,7 @@ function showToast(message, type = 'info', showUndo = false) {
 }
 
 /* ----------------------------------------------------------------------------
-   9. Event Delegation & Listeners
+   9. Native HTML5 Drag and Drop & Event Listeners
    ---------------------------------------------------------------------------- */
 
 function setupEventListeners() {
@@ -739,6 +764,7 @@ function setupEventListeners() {
     });
   });
 
+  // Card click event delegation (Edit, Delete, Move Arrow Buttons)
   DOM.boardGrid.addEventListener('click', (e) => {
     const cardEl = e.target.closest('.task-card');
     if (!cardEl) return;
@@ -773,7 +799,50 @@ function setupEventListeners() {
     }
   });
 
-  // Real-time Search, Filter, and Sort listeners
+  // Native HTML5 Drag & Drop on Cards
+  DOM.boardGrid.addEventListener('dragstart', (e) => {
+    const cardEl = e.target.closest('.task-card');
+    if (!cardEl) return;
+    const taskId = cardEl.getAttribute('data-id');
+    e.dataTransfer.setData('text/plain', taskId);
+    e.dataTransfer.effectAllowed = 'move';
+    cardEl.classList.add('is-dragging');
+  });
+
+  DOM.boardGrid.addEventListener('dragend', (e) => {
+    const cardEl = e.target.closest('.task-card');
+    if (cardEl) {
+      cardEl.classList.remove('is-dragging');
+    }
+    DOM.columns.forEach(col => col.classList.remove('column-drag-over'));
+  });
+
+  // Native HTML5 Drop Target Listeners on Columns
+  DOM.columns.forEach(col => {
+    col.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      col.classList.add('column-drag-over');
+    });
+
+    col.addEventListener('dragleave', (e) => {
+      if (!col.contains(e.relatedTarget)) {
+        col.classList.remove('column-drag-over');
+      }
+    });
+
+    col.addEventListener('drop', (e) => {
+      e.preventDefault();
+      col.classList.remove('column-drag-over');
+      const rawTaskId = e.dataTransfer.getData('text/plain');
+      const targetStatus = col.getAttribute('data-status');
+      if (rawTaskId && targetStatus) {
+        moveTaskToStatus(Number(rawTaskId), targetStatus);
+      }
+    });
+  });
+
+  // Toolbar Live Search & Filter Listeners
   DOM.searchInput.addEventListener('input', renderBoard);
   DOM.priorityFilter.addEventListener('change', renderBoard);
   DOM.sortSelect.addEventListener('change', renderBoard);
