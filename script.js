@@ -11,9 +11,6 @@
    1. State & Storage Constants
    ---------------------------------------------------------------------------- */
 
-/**
- * Storage keys used for browser localStorage persistence.
- */
 const STORAGE_KEYS = {
   TASKS: 'codelane_tasks',
   THEME: 'codelane_theme'
@@ -21,7 +18,7 @@ const STORAGE_KEYS = {
 
 /**
  * Central state array holding all task objects.
- * Task schema: { id: number, title: string, description: string, priority: string, due: string, status: string, createdAt: number }
+ * Schema: { id: number, title: string, description: string, priority: string, due: string, status: string, createdAt: number }
  */
 let tasks = [];
 
@@ -32,7 +29,7 @@ let recentlyDeletedTask = null;
 let toastTimeoutId = null;
 
 /**
- * Default sample coding tasks loaded on first visit.
+ * Default sample coding tasks loaded on first visit or reset.
  */
 const SAMPLE_TASKS = [
   {
@@ -58,7 +55,7 @@ const SAMPLE_TASKS = [
     title: 'Write project README',
     description: 'Document system architecture, setup commands, and viva talking points in markdown.',
     priority: 'low',
-    due: getOffsetDateString(-1), // Purposely set yesterday to showcase overdue indicator
+    due: getOffsetDateString(-1), // Purposely set yesterday to showcase overdue highlight
     status: 'done',
     createdAt: 1700000003000
   }
@@ -82,7 +79,7 @@ const DOM = {
   distInProgress: document.getElementById('dist-inprogress'),
   distDone: document.getElementById('dist-done'),
 
-  // Toolbar
+  // Toolbar (Search, Filter, Sort)
   searchInput: document.getElementById('search-input'),
   priorityFilter: document.getElementById('priority-filter'),
   sortSelect: document.getElementById('sort-select'),
@@ -128,16 +125,13 @@ const DOM = {
   toastContainer: document.getElementById('toast-container')
 };
 
-// Pending callback for confirmation dialog
+// Variable holding pending callback for the confirmation modal
 let onConfirmCallback = null;
 
 /* ----------------------------------------------------------------------------
-   3. Initialization & Lifecycle
+   3. Initialization & Date Helpers
    ---------------------------------------------------------------------------- */
 
-/**
- * Initializes the application: loads theme, loads tasks, attaches listeners, and renders.
- */
 function initApp() {
   loadTheme();
   loadTasks();
@@ -146,7 +140,7 @@ function initApp() {
 }
 
 /**
- * Helper to compute an ISO date string (YYYY-MM-DD) offset by days from today.
+ * Computes an ISO date string (YYYY-MM-DD) offset by days from today.
  * @param {number} daysOffset 
  * @returns {string} Date string formatted as YYYY-MM-DD
  */
@@ -160,13 +154,9 @@ function getOffsetDateString(daysOffset = 0) {
 }
 
 /* ----------------------------------------------------------------------------
-   4. LocalStorage Data & Theme Persistence
+   4. LocalStorage & Theme Management
    ---------------------------------------------------------------------------- */
 
-/**
- * Restores user theme choice from localStorage.
- * Defaults to dark theme if no preference has been saved yet.
- */
 function loadTheme() {
   try {
     const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME);
@@ -182,23 +172,16 @@ function loadTheme() {
   }
 }
 
-/**
- * Toggles the theme between dark and light, updates DOM, and saves to localStorage.
- */
 function toggleTheme() {
   const isCurrentlyLight = document.body.classList.toggle('theme-light');
   updateThemeButtonUI(isCurrentlyLight);
   try {
     localStorage.setItem(STORAGE_KEYS.THEME, isCurrentlyLight ? 'light' : 'dark');
   } catch (err) {
-    console.warn('Could not save theme preference to localStorage:', err);
+    console.warn('Could not save theme to localStorage:', err);
   }
 }
 
-/**
- * Updates the theme button icon and text for clarity.
- * @param {boolean} isLight 
- */
 function updateThemeButtonUI(isLight) {
   if (!DOM.themeToggleBtn) return;
   const iconSpan = DOM.themeToggleBtn.querySelector('.theme-icon');
@@ -215,48 +198,31 @@ function updateThemeButtonUI(isLight) {
   }
 }
 
-/**
- * Safely loads tasks from localStorage with try/catch.
- * If visiting for the first time, seeds SAMPLE_TASKS.
- * If data is corrupted, catches the error and recovers safely.
- */
 function loadTasks() {
   try {
     const rawData = localStorage.getItem(STORAGE_KEYS.TASKS);
-
-    // 1. First visit check: key is null
     if (rawData === null) {
       tasks = [...SAMPLE_TASKS];
       saveTasks();
       return;
     }
-
-    // 2. Parse JSON
     const parsed = JSON.parse(rawData);
-
-    // 3. Schema validation check: must be an array
     if (Array.isArray(parsed)) {
       tasks = parsed;
     } else {
-      throw new Error('Stored data is not a valid task array.');
+      throw new Error('Corrupted tasks schema');
     }
   } catch (err) {
-    console.error('Failed to load or parse tasks from localStorage. Recovering with sample data:', err);
+    console.error('Failed to load tasks from localStorage. Recovering with samples:', err);
     tasks = [...SAMPLE_TASKS];
     saveTasks();
-    showToast('Corrupted data detected. Restored default sample tasks.', 'error');
+    showToast('Corrupted data detected. Restored default tasks.', 'error');
   }
 }
 
-/**
- * Safely serializes and saves the central tasks array into localStorage.
- * Wrapped in try/catch to gracefully handle QuotaExceededError or disabled storage.
- * @returns {boolean} Whether save succeeded
- */
 function saveTasks() {
   try {
-    const serialized = JSON.stringify(tasks);
-    localStorage.setItem(STORAGE_KEYS.TASKS, serialized);
+    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
     return true;
   } catch (err) {
     console.error('Error saving tasks to localStorage:', err);
@@ -266,38 +232,67 @@ function saveTasks() {
 }
 
 /* ----------------------------------------------------------------------------
-   5. Rendering Architecture (Data -> Save -> Render)
+   5. Search, Filter, Sort Engine & Rendering
    ---------------------------------------------------------------------------- */
 
 /**
- * Central orchestrator that redraws the whole UI to reflect current data state.
+ * Filter and sort visible tasks combining search, priority filter, and sorting.
+ * @returns {Array<Object>}
  */
+function getVisibleTasks() {
+  const searchTerm = DOM.searchInput ? DOM.searchInput.value.trim().toLowerCase() : '';
+  const selectedPriority = DOM.priorityFilter ? DOM.priorityFilter.value : 'all';
+  const sortMode = DOM.sortSelect ? DOM.sortSelect.value : 'created-desc';
+
+  // 1. Multi-criteria Filtering (Search across Title & Description + Priority Filter)
+  let filtered = tasks.filter(task => {
+    const titleMatch = task.title.toLowerCase().includes(searchTerm);
+    const descMatch = Boolean(task.description && task.description.toLowerCase().includes(searchTerm));
+    const matchesSearch = searchTerm === '' || titleMatch || descMatch;
+    const matchesPriority = selectedPriority === 'all' || task.priority === selectedPriority;
+    return matchesSearch && matchesPriority;
+  });
+
+  // 2. Sorting by User Selection
+  filtered.sort((a, b) => {
+    if (sortMode === 'due-asc') {
+      const dueA = a.due || '9999-99-99';
+      const dueB = b.due || '9999-99-99';
+      return dueA.localeCompare(dueB);
+    }
+    if (sortMode === 'priority-desc') {
+      const priorityOrder = { high: 3, medium: 2, low: 1 };
+      return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+    }
+    // Default sort: 'created-desc' (newest first)
+    const timeA = a.createdAt || a.id;
+    const timeB = b.createdAt || b.id;
+    return timeB - timeA;
+  });
+
+  return filtered;
+}
+
 function render() {
   updateDashboard();
   renderBoard();
 }
 
-/**
- * Updates the Overview Strip: Total, To Do, In Progress, Done, Progress Bar, and Distribution Bar.
- */
 function updateDashboard() {
   const total = tasks.length;
   const todoCount = tasks.filter(t => t.status === 'todo').length;
   const inProgressCount = tasks.filter(t => t.status === 'inprogress').length;
   const doneCount = tasks.filter(t => t.status === 'done').length;
 
-  // Update numerical metric values
   DOM.statTotal.textContent = total;
   DOM.statTodo.textContent = todoCount;
   DOM.statInProgress.textContent = inProgressCount;
   DOM.statDone.textContent = doneCount;
 
-  // Calculate and update completion percentage
   const percentage = total > 0 ? Math.round((doneCount / total) * 100) : 0;
   DOM.progressPercent.textContent = `${percentage}%`;
   DOM.progressBarFill.style.width = `${percentage}%`;
 
-  // Update segmented distribution breakdown bar
   if (total > 0) {
     DOM.distTodo.style.width = `${(todoCount / total) * 100}%`;
     DOM.distInProgress.style.width = `${(inProgressCount / total) * 100}%`;
@@ -309,18 +304,13 @@ function updateDashboard() {
   }
 }
 
-/**
- * Renders task cards into the three board columns based on visible filtered items.
- */
 function renderBoard() {
-  // Clear existing card elements in all three columns
   DOM.cardsTodo.innerHTML = '';
   DOM.cardsInProgress.innerHTML = '';
   DOM.cardsDone.innerHTML = '';
 
   const visibleTasks = getVisibleTasks();
 
-  // Buckets for column tasks
   const todoTasks = [];
   const inProgressTasks = [];
   const doneTasks = [];
@@ -335,47 +325,34 @@ function renderBoard() {
     }
   });
 
-  // Render cards safely using document.createElement
   todoTasks.forEach(task => DOM.cardsTodo.appendChild(createTaskCardElement(task)));
   inProgressTasks.forEach(task => DOM.cardsInProgress.appendChild(createTaskCardElement(task)));
   doneTasks.forEach(task => DOM.cardsDone.appendChild(createTaskCardElement(task)));
 
-  // Update live column count badges
+  // Live column badges match visible tasks count
   DOM.countTodo.textContent = todoTasks.length;
   DOM.countInProgress.textContent = inProgressTasks.length;
   DOM.countDone.textContent = doneTasks.length;
 
-  // Show or hide empty state placeholders per column
   DOM.emptyTodo.style.display = todoTasks.length === 0 ? 'flex' : 'none';
   DOM.emptyInProgress.style.display = inProgressTasks.length === 0 ? 'flex' : 'none';
   DOM.emptyDone.style.display = doneTasks.length === 0 ? 'flex' : 'none';
 
-  // Show global empty state message if search/filter returned 0 results
-  if (tasks.length > 0 && visibleTasks.length === 0) {
+  // Show "No Results" message when search/filter returns nothing
+  const isFiltering = (DOM.searchInput.value.trim() !== '') || (DOM.priorityFilter.value !== 'all');
+  if (isFiltering && visibleTasks.length === 0) {
     DOM.boardEmptyMessage.hidden = false;
   } else {
     DOM.boardEmptyMessage.hidden = true;
   }
 }
 
-/**
- * Helper to determine if a task is overdue.
- * A task is overdue if today's date > due date AND status is NOT 'done'.
- * @param {Object} task 
- * @returns {boolean}
- */
 function isTaskOverdue(task) {
   if (task.status === 'done' || !task.due) return false;
   const todayStr = getOffsetDateString(0);
   return task.due < todayStr;
 }
 
-/**
- * Constructs a DOM Element for a single task card.
- * Uses textContent for all user-entered text to avoid XSS vulnerabilities.
- * @param {Object} task 
- * @returns {HTMLElement} article.task-card
- */
 function createTaskCardElement(task) {
   const card = document.createElement('article');
   card.className = 'task-card';
@@ -388,7 +365,7 @@ function createTaskCardElement(task) {
     card.classList.add('is-overdue');
   }
 
-  // --- 1. Card Header (Title & Priority Badge) ---
+  // Header: Title & Priority Badge
   const header = document.createElement('header');
   header.className = 'card-header';
 
@@ -404,7 +381,7 @@ function createTaskCardElement(task) {
   header.appendChild(priorityBadge);
   card.appendChild(header);
 
-  // --- 2. Card Description (if present) ---
+  // Description
   if (task.description && task.description.trim() !== '') {
     const descEl = document.createElement('p');
     descEl.className = 'card-desc';
@@ -412,7 +389,7 @@ function createTaskCardElement(task) {
     card.appendChild(descEl);
   }
 
-  // --- 3. Card Metadata (Due Date & Overdue Tag) ---
+  // Metadata: Due date & Overdue tag
   const meta = document.createElement('div');
   meta.className = 'card-meta';
 
@@ -430,11 +407,10 @@ function createTaskCardElement(task) {
 
   card.appendChild(meta);
 
-  // --- 4. Card Action Buttons (Move Left/Right, Edit, Delete) ---
+  // Actions footer
   const actions = document.createElement('footer');
   actions.className = 'card-actions';
 
-  // Navigation group (Move Left / Right)
   const navGroup = document.createElement('div');
   navGroup.className = 'card-actions-nav';
 
@@ -443,25 +419,20 @@ function createTaskCardElement(task) {
   moveLeftBtn.className = 'card-btn card-btn-move-left';
   moveLeftBtn.textContent = '←';
   moveLeftBtn.title = 'Move left';
-  moveLeftBtn.setAttribute('aria-label', `Move ${task.title} to previous column`);
-  if (task.status === 'todo') {
-    moveLeftBtn.disabled = true;
-  }
+  moveLeftBtn.setAttribute('aria-label', `Move ${task.title} left`);
+  if (task.status === 'todo') moveLeftBtn.disabled = true;
 
   const moveRightBtn = document.createElement('button');
   moveRightBtn.type = 'button';
   moveRightBtn.className = 'card-btn card-btn-move-right';
   moveRightBtn.textContent = '→';
   moveRightBtn.title = 'Move right';
-  moveRightBtn.setAttribute('aria-label', `Move ${task.title} to next column`);
-  if (task.status === 'done') {
-    moveRightBtn.disabled = true;
-  }
+  moveRightBtn.setAttribute('aria-label', `Move ${task.title} right`);
+  if (task.status === 'done') moveRightBtn.disabled = true;
 
   navGroup.appendChild(moveLeftBtn);
   navGroup.appendChild(moveRightBtn);
 
-  // CRUD group (Edit & Delete)
   const crudGroup = document.createElement('div');
   crudGroup.className = 'card-actions-crud';
 
@@ -489,54 +460,14 @@ function createTaskCardElement(task) {
   return card;
 }
 
-/**
- * Filter and sort visible tasks.
- * Supports live search, priority filtering, and sorting.
- * @returns {Array<Object>}
- */
-function getVisibleTasks() {
-  const searchTerm = DOM.searchInput ? DOM.searchInput.value.trim().toLowerCase() : '';
-  const selectedPriority = DOM.priorityFilter ? DOM.priorityFilter.value : 'all';
-  const sortMode = DOM.sortSelect ? DOM.sortSelect.value : 'created-desc';
-
-  // 1. Filter by Search Query & Priority
-  let filtered = tasks.filter(task => {
-    const matchesSearch = task.title.toLowerCase().includes(searchTerm) ||
-      (task.description && task.description.toLowerCase().includes(searchTerm));
-    const matchesPriority = selectedPriority === 'all' || task.priority === selectedPriority;
-    return matchesSearch && matchesPriority;
-  });
-
-  // 2. Sort results
-  filtered.sort((a, b) => {
-    if (sortMode === 'due-asc') {
-      return (a.due || '').localeCompare(b.due || '');
-    }
-    if (sortMode === 'priority-desc') {
-      const priorityWeight = { high: 3, medium: 2, low: 1 };
-      return (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
-    }
-    // Default: 'created-desc'
-    return (b.createdAt || b.id) - (a.createdAt || a.id);
-  });
-
-  return filtered;
-}
-
 /* ----------------------------------------------------------------------------
-   6. CRUD Operations (Add, Edit, Delete, Move)
+   6. CRUD Operations
    ---------------------------------------------------------------------------- */
 
-/**
- * Opens the modal dialog to create a new task or edit an existing one.
- * @param {Object|null} taskToEdit 
- * @param {string} defaultStatus 
- */
 function openTaskModal(taskToEdit = null, defaultStatus = 'todo') {
   clearValidationErrors();
 
   if (taskToEdit) {
-    // Editing Mode
     DOM.modalTitle.textContent = 'Edit Task';
     DOM.taskIdInput.value = String(taskToEdit.id);
     DOM.taskTitleInput.value = taskToEdit.title;
@@ -545,31 +476,24 @@ function openTaskModal(taskToEdit = null, defaultStatus = 'todo') {
     DOM.taskDueInput.value = taskToEdit.due;
     DOM.taskStatusSelect.value = taskToEdit.status;
   } else {
-    // Creation Mode
     DOM.modalTitle.textContent = 'Create Task';
     DOM.taskForm.reset();
     DOM.taskIdInput.value = '';
     DOM.taskPrioritySelect.value = 'medium';
     DOM.taskStatusSelect.value = defaultStatus;
-    DOM.taskDueInput.value = getOffsetDateString(3); // Default due date in 3 days
+    DOM.taskDueInput.value = getOffsetDateString(3);
   }
 
   DOM.taskModal.hidden = false;
   DOM.taskTitleInput.focus();
 }
 
-/**
- * Closes the task creation / editing modal.
- */
 function closeTaskModal() {
   DOM.taskModal.hidden = true;
   DOM.taskForm.reset();
   clearValidationErrors();
 }
 
-/**
- * Clears visual error labels and invalid field borders.
- */
 function clearValidationErrors() {
   DOM.titleError.textContent = '';
   DOM.dueError.textContent = '';
@@ -577,10 +501,6 @@ function clearValidationErrors() {
   DOM.taskDueInput.classList.remove('is-invalid');
 }
 
-/**
- * Validates modal inputs and returns whether the form is valid.
- * @returns {boolean}
- */
 function validateTaskForm() {
   clearValidationErrors();
   let isValid = true;
@@ -606,17 +526,10 @@ function validateTaskForm() {
   return isValid;
 }
 
-/**
- * Handles form submission for both Creating and Updating tasks.
- * Follows the pattern: Mutate Data -> Save to localStorage -> Render UI.
- * @param {Event} e 
- */
 function handleTaskFormSubmit(e) {
   e.preventDefault();
 
-  if (!validateTaskForm()) {
-    return;
-  }
+  if (!validateTaskForm()) return;
 
   const idVal = DOM.taskIdInput.value.trim();
   const title = DOM.taskTitleInput.value.trim();
@@ -626,7 +539,6 @@ function handleTaskFormSubmit(e) {
   const status = DOM.taskStatusSelect.value;
 
   if (idVal) {
-    // --- UPDATE EXISTING TASK ---
     const numericId = Number(idVal);
     const existingIndex = tasks.findIndex(t => t.id === numericId);
 
@@ -645,7 +557,6 @@ function handleTaskFormSubmit(e) {
       showToast('Task updated successfully.', 'success');
     }
   } else {
-    // --- CREATE NEW TASK ---
     const newTask = {
       id: Date.now(),
       title,
@@ -664,10 +575,6 @@ function handleTaskFormSubmit(e) {
   }
 }
 
-/**
- * Deletes a task by ID, stores it for Undo, saves and renders.
- * @param {number} taskId 
- */
 function deleteTask(taskId) {
   const index = tasks.findIndex(t => t.id === taskId);
   if (index === -1) return;
@@ -683,13 +590,9 @@ function deleteTask(taskId) {
   showToast('Task deleted.', 'info', true);
 }
 
-/**
- * Restores the most recently deleted task.
- */
 function undoDelete() {
   if (!recentlyDeletedTask) return;
 
-  // Insert back at original index or append if out of bounds
   const targetIndex = Math.min(recentlyDeletedTask.index, tasks.length);
   tasks.splice(targetIndex, 0, recentlyDeletedTask.task);
 
@@ -699,11 +602,6 @@ function undoDelete() {
   showToast('Task deletion undone.', 'success');
 }
 
-/**
- * Moves a task to the next or previous column.
- * @param {number} taskId 
- * @param {'left'|'right'} direction 
- */
 function moveTaskDirection(taskId, direction) {
   const task = tasks.find(t => t.id === taskId);
   if (!task) return;
@@ -727,13 +625,6 @@ function moveTaskDirection(taskId, direction) {
    7. Confirmation Dialog Modal
    ---------------------------------------------------------------------------- */
 
-/**
- * Opens confirmation modal with customized title, message, and confirm button text.
- * @param {string} title 
- * @param {string} message 
- * @param {string} actionText 
- * @param {Function} onConfirm 
- */
 function showConfirmModal(title, message, actionText = 'Delete', onConfirm) {
   DOM.confirmModalTitle.textContent = title;
   DOM.confirmModalMessage.textContent = message;
@@ -743,24 +634,15 @@ function showConfirmModal(title, message, actionText = 'Delete', onConfirm) {
   DOM.confirmProceedBtn.focus();
 }
 
-/**
- * Closes confirmation modal and clears pending callback.
- */
 function closeConfirmModal() {
   DOM.confirmModal.hidden = true;
   onConfirmCallback = null;
 }
 
 /* ----------------------------------------------------------------------------
-   8. Toast Notifications with Undo Capability
+   8. Toast Notifications
    ---------------------------------------------------------------------------- */
 
-/**
- * Displays a toast notification on the bottom-right corner.
- * @param {string} message 
- * @param {'success'|'error'|'info'} type 
- * @param {boolean} showUndo 
- */
 function showToast(message, type = 'info', showUndo = false) {
   if (toastTimeoutId) {
     clearTimeout(toastTimeoutId);
@@ -797,26 +679,22 @@ function showToast(message, type = 'info', showUndo = false) {
 }
 
 /* ----------------------------------------------------------------------------
-   9. Event Delegation & Central Event Listeners
+   9. Event Delegation & Listeners
    ---------------------------------------------------------------------------- */
 
 function setupEventListeners() {
-  // --- Theme Toggle Listener ---
   if (DOM.themeToggleBtn) {
     DOM.themeToggleBtn.addEventListener('click', toggleTheme);
   }
 
-  // --- Header Actions ---
   DOM.openNewTaskBtn.addEventListener('click', () => {
     openTaskModal(null, 'todo');
   });
 
-  // --- Modal Form Events ---
   DOM.modalCloseBtn.addEventListener('click', closeTaskModal);
   DOM.modalCancelBtn.addEventListener('click', closeTaskModal);
   DOM.taskForm.addEventListener('submit', handleTaskFormSubmit);
 
-  // Real-time input validation clearance
   DOM.taskTitleInput.addEventListener('input', () => {
     if (DOM.taskTitleInput.value.trim().length >= 3) {
       DOM.titleError.textContent = '';
@@ -831,7 +709,6 @@ function setupEventListeners() {
     }
   });
 
-  // Close modals on clicking overlay backdrop
   DOM.taskModal.addEventListener('click', (e) => {
     if (e.target === DOM.taskModal) closeTaskModal();
   });
@@ -848,7 +725,6 @@ function setupEventListeners() {
     closeConfirmModal();
   });
 
-  // Global keydown (Escape to close modals)
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!DOM.taskModal.hidden) closeTaskModal();
@@ -856,7 +732,6 @@ function setupEventListeners() {
     }
   });
 
-  // --- Column Header "+ Add" Buttons ---
   document.querySelectorAll('.add-col-task-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const colStatus = btn.getAttribute('data-status') || 'todo';
@@ -864,8 +739,6 @@ function setupEventListeners() {
     });
   });
 
-  // --- Event Delegation on the Kanban Board Grid ---
-  // One single click listener handles Edit, Delete, Move Left, and Move Right on all cards!
   DOM.boardGrid.addEventListener('click', (e) => {
     const cardEl = e.target.closest('.task-card');
     if (!cardEl) return;
@@ -874,13 +747,11 @@ function setupEventListeners() {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
-    // Handle Edit
     if (e.target.closest('.card-btn-edit')) {
       openTaskModal(task);
       return;
     }
 
-    // Handle Delete (with custom confirmation modal)
     if (e.target.closest('.card-btn-delete')) {
       showConfirmModal(
         'Delete Task',
@@ -891,20 +762,18 @@ function setupEventListeners() {
       return;
     }
 
-    // Handle Move Left (←)
     if (e.target.closest('.card-btn-move-left')) {
       moveTaskDirection(taskId, 'left');
       return;
     }
 
-    // Handle Move Right (→)
     if (e.target.closest('.card-btn-move-right')) {
       moveTaskDirection(taskId, 'right');
       return;
     }
   });
 
-  // --- Toolbar Live Search & Filter Listeners ---
+  // Real-time Search, Filter, and Sort listeners
   DOM.searchInput.addEventListener('input', renderBoard);
   DOM.priorityFilter.addEventListener('change', renderBoard);
   DOM.sortSelect.addEventListener('change', renderBoard);
@@ -919,5 +788,4 @@ function setupEventListeners() {
   }
 }
 
-// Kick off the application on DOM ready
 document.addEventListener('DOMContentLoaded', initApp);
